@@ -1,0 +1,5 @@
+N=850
+energy=3988871109.3434829712
+inversion_err=7.9519e-08
+recon_err=1.4340e-06
+control_set_file=control_set_ROIs_B0_mono+bipolar_k3.txt
