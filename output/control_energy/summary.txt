@@ -1,5 +1,5 @@
 N=850
-energy=5607052075.6787719727
-inversion_err=7.3042e-08
-recon_err=1.4059e-06
+energy=3030044845.4132242203
+inversion_err=3.8589e-08
+recon_err=8.7229e-07
 control_set_file=control_set_ROIs_B0_MONO_top1_perContact.txt
