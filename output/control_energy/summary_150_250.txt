@@ -1,0 +1,6 @@
+band=150_250
+energy=35.5421354988
+energy_controllers=33.6524922910
+energy_noncontrollers=1.8896432079
+inversion_err=1.2997e-10
+recon_err=2.9089e-09
