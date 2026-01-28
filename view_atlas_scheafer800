@@ -1,0 +1,233 @@
+import re
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import nibabel as nib
+import matplotlib.pyplot as plt
+
+try:
+    from nilearn import plotting, datasets
+    HAVE_NILEARN = True
+except Exception:
+    HAVE_NILEARN = False
+
+# Path base
+try:
+    ROOT = Path(__file__).resolve().parent
+except NameError:
+    ROOT = Path.cwd()
+
+BASE = ROOT / "NCT_analysis\data"       # percorso alla cartella data del progetto
+OUT = ROOT / "output"   # Cartella per gli output
+OUT.mkdir(exist_ok=True)
+
+ATLAS_PATH = BASE / "Sheafer800_TianS3.nii"  # file atlas dentro il folder
+LUT_XLSX   = BASE / "centroidsMNI2mm_850ROIs.xlsx"
+
+BAND = "250_500"
+TOP_CSV = OUT / "control_energy" / f"top_nodes_controllers_{BAND}.csv"
+
+# Output file names
+LOOKUP_CSV = OUT / "roi_lookup_850.csv"
+LOOK_UP_XLSX = OUT / "roi_lookup_850.xlsx"
+TOP50_CSV  = OUT / "control_energy" / f"top50_controllers_{BAND}_named.csv"
+TOP50_XLSX = OUT / "control_energy" / f"top50_controllers_{BAND}_named.xlsx"
+
+TOP50_LH_CSV  = OUT / "control_energy" / f"top50_controllers_{BAND}_LH.csv"
+TOP50_RH_CSV  = OUT / "control_energy" / f"top50_controllers_{BAND}_RH.csv"
+TOP50_LH_XLSX = OUT / "control_energy" / f"top50_controllers_{BAND}_LH.xlsx"
+TOP50_RH_XLSX = OUT / "control_energy" / f"top50_controllers_{BAND}_RH.xlsx"
+
+EXCEL_DIR   = OUT / "excel_exports"   # cartella unica per tutti gli .xlsx
+EXCEL_DIR.mkdir(exist_ok=True)
+
+
+# =========================
+# FUNCTIONS
+# =========================
+def parse_roi_name(name: str):
+    """
+    Estrae hemi (LH/RH), network (Vis, SomMot, ecc.) e indice parcella dal ROI name.
+    Funziona bene se roi_name contiene token separati da "_" e include LH/RH.
+    """
+    if name is None or (isinstance(name, float) and np.isnan(name)):
+        return dict(hemi=np.nan, network=np.nan)
+
+    s = str(name)
+    toks = re.split(r"[_\s]+", s)
+
+    hemi = np.nan
+    for t in toks:
+        if t in ("LH", "RH"):
+            hemi = t
+            break
+
+    networks = {
+        "Vis","SomMot","DorsAttn","SalVentAttn","Limbic","Cont","Default",
+        "TempPar","DMN","VAN","DAN","FPN","SMN"
+    }
+    network = np.nan
+    for t in toks:
+        if t in networks:
+            network = t
+            break
+
+    return dict(hemi=hemi, network=network)
+
+
+def load_lookup_table(lut_xlsx: Path) -> pd.DataFrame:
+    if not lut_xlsx.exists():
+        raise FileNotFoundError(f"Non trovo LUT: {lut_xlsx}")
+
+    lut = pd.read_excel(lut_xlsx).rename(columns={
+        "ROI Label": "roi_id",
+        "ROI Name": "roi_name",
+        "R/L": "mni_x",
+        "A/P": "mni_y",
+        "S/I": "mni_z",
+    })
+
+    # sanity
+    for c in ["roi_id", "roi_name"]:
+        if c not in lut.columns:
+            raise ValueError(f"Nella LUT manca la colonna '{c}'. Colonne: {list(lut.columns)}")
+
+    lut["roi_id"] = pd.to_numeric(lut["roi_id"], errors="coerce").astype("Int64")
+    lut = lut.dropna(subset=["roi_id"]).copy()
+    lut["roi_id"] = lut["roi_id"].astype(int)
+
+    parsed = lut["roi_name"].apply(parse_roi_name).apply(pd.Series)
+    lut = pd.concat([lut, parsed], axis=1)
+
+    # salva lookup una volta (comoda per merge future)
+    lut.to_csv(LOOKUP_CSV, index=False)
+    lut.to_excel(EXCEL_DIR / "roi_lookup_850.xlsx", index=False, engine="openpyxl")
+    print(f"[OK] Lookup salvata: {LOOKUP_CSV}")
+    print(f"[OK] Lookup Excel salvata: {EXCEL_DIR / 'roi_lookup_850.xlsx'}")
+
+    return lut
+
+
+def view_atlas_slices(atlas_path: Path, slice_x=None, slice_y=None, slice_z=None):
+    if not atlas_path.exists():
+        print(f"[SKIP] Atlas non trovato: {atlas_path}")
+        return
+
+    img = nib.load(str(atlas_path))
+    lab = np.asarray(img.get_fdata(), dtype=np.int32)
+
+    print("\n=== ATLAS INFO ===")
+    print("Path:", atlas_path)
+    print("Shape:", lab.shape)
+    print("Labels min/max:", int(lab.min()), int(lab.max()))
+    uniq = np.unique(lab)
+    print("N labels (incl 0):", uniq.size)
+    print("N labels (excl 0):", (uniq[uniq != 0]).size)
+
+    nx, ny, nz = lab.shape[:3]
+    sx = (nx // 2) if slice_x is None else slice_x
+    sy = (ny // 2) if slice_y is None else slice_y
+    sz = (nz // 2) if slice_z is None else slice_z
+
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 3, 1)
+    plt.imshow(lab[sx, :, :].T, origin="lower", interpolation="nearest")
+    plt.title(f"Sagittale (x={sx})")
+    plt.axis("off")
+
+    plt.subplot(1, 3, 2)
+    plt.imshow(lab[:, sy, :].T, origin="lower", interpolation="nearest")
+    plt.title(f"Coronale (y={sy})")
+    plt.axis("off")
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(lab[:, :, sz].T, origin="lower", interpolation="nearest")
+    plt.title(f"Assiale (z={sz})")
+    plt.axis("off")
+
+    plt.suptitle("Schaefer atlas labels (voxel space)")
+    plt.tight_layout()
+    plt.show()
+
+    if HAVE_NILEARN:
+        print("\n[Nilearn] View interattiva + overlay su MNI152...")
+        v = plotting.view_img(img, title="Schaefer atlas (labels)")
+        v.open_in_browser()
+
+        mni = datasets.load_mni152_template()
+        plotting.plot_roi(
+            img, bg_img=mni, title="Schaefer atlas overlay su MNI152",
+            cut_coords=(0, -20, 20), display_mode="ortho", draw_cross=False
+        )
+        plotting.show()
+
+
+def save_csv_and_xlsx(df: pd.DataFrame, csv_path: Path, xlsx_name: str):
+    csv_path.parent.mkdir(exist_ok=True, parents=True)
+    df.to_csv(csv_path, index=False)
+
+    xlsx_path = EXCEL_DIR / xlsx_name
+    df.to_excel(xlsx_path, index=False, engine="openpyxl")
+
+    print(f"[SAVE] CSV:  {csv_path}")
+    print(f"[SAVE] XLSX: {xlsx_path}")
+
+
+# =========================
+# MAIN 
+# =========================
+def main():
+    print("ROOT =", ROOT)
+    print("BASE =", BASE)
+    print("OUT  =", OUT)
+    print("ATLAS_PATH =", ATLAS_PATH)
+    print("TOP_CSV =", TOP_CSV)
+
+    # 1) Visualizza atlas (se vuoi)
+    view_atlas_slices(ATLAS_PATH, slice_x=None, slice_y=None, slice_z=None)
+
+    # 2) Carica lookup una sola volta
+    lookup = load_lookup_table(LUT_XLSX)
+
+    # 3) Carica top controllers e fai merge
+    if not TOP_CSV.exists():
+        raise FileNotFoundError(f"Non trovo il file top controllers: {TOP_CSV}")
+
+    top = pd.read_csv(TOP_CSV)
+
+    # Assumo che top abbia almeno: rank, roi_id, node_energy
+    for c in ["rank", "roi_id", "node_energy"]:
+        if c not in top.columns:
+            raise ValueError(f"Nel file {TOP_CSV.name} manca la colonna '{c}'. Colonne: {list(top.columns)}")
+
+    # Merge + selezione colonne richieste
+    top_named = top.merge(lookup[["roi_id", "roi_name", "hemi", "network"]], on="roi_id", how="left")
+
+    # 4) Tabella TOP 50 (campi richiesti)
+    top50 = top_named.sort_values("rank").head(50).copy()
+    top50 = top50[["rank", "roi_id", "roi_name", "hemi", "network", "node_energy"]]
+
+    print("\n=== TOP 50 CONTROLLERS (named) ===")
+    print(top50.to_string(index=False))
+
+    # 5) Tabella separata LH vs RH (sulle 50)
+    top50_lh = top50[top50["hemi"] == "LH"].copy()
+    top50_rh = top50[top50["hemi"] == "RH"].copy()
+
+    print("\n=== TOP 50 — SOLO LH ===")
+    print(top50_lh.to_string(index=False) if len(top50_lh) else "[vuoto]")
+
+    print("\n=== TOP 50 — SOLO RH ===")
+    print(top50_rh.to_string(index=False) if len(top50_rh) else "[vuoto]")
+    
+    # Salva CSV + Excel
+    save_csv_and_xlsx(top50, TOP50_CSV,  f"top50_controllers_{BAND}_named.xlsx")
+    save_csv_and_xlsx(top50_lh, TOP50_LH_CSV, f"top50_controllers_{BAND}_LH.xlsx")
+    save_csv_and_xlsx(top50_rh, TOP50_RH_CSV, f"top50_controllers_{BAND}_RH.xlsx")
+
+    print("\n[EXCEL OUTPUT DIR] =", EXCEL_DIR.resolve())
+
+if __name__ == "__main__":
+    main()
+

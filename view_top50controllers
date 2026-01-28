@@ -1,0 +1,234 @@
+# voglio generare una mappa NIfTI con 50 sfere (una per ROI associata a top controller)
+# la plotto con nilearn
+
+# WORKFLOW: prendo le coord dei centroidi da LUT centroidsMNI2mm_850ROIs.xlsx e per
+# i miei top50 creo un volume vuoto e disegno sfere attorno a ciascun centroide (raggio in mm)
+#visualizzo poi con nilearn e salvo il file top50_spheres.nii.gz da aprire in FreeSurfer
+
+# 1) CREO UN NIfTI CON 50 SFERE (SPAZIO DELL'ATLAS)
+import re
+import numpy as np
+import pandas as pd
+import nibabel as nib
+from nilearn import plotting
+from pathlib import Path
+from matplotlib.colors import ListedColormap
+
+ROOT = Path(__file__).resolve().parent
+BASE = ROOT / "NCT_analysis\data"       # percorso alla cartella data del progetto
+OUT = ROOT / "output"   # Cartella per gli output
+OUT.mkdir(exist_ok=True, parents=True)
+
+ATLAS_PATH = BASE / "Sheafer800_TianS3.nii"  # file atlas dentro il folder
+LUT_XLSX   = BASE / "centroidsMNI2mm_850ROIs.xlsx"
+
+BAND = "250_500"
+TOP50_CSV = OUT / "control_energy" / f"top50_controllers_{BAND}_named.csv"
+
+RADIUS_MM = 3.0  # raggio sfera in mm
+CLIP_TO_ROI = True # se True, la sfera resta dentro la ROI (voxel) dell'atlas
+
+# ordine fisso dei 7 network (1..7)
+NET_ORDER = ["Vis","SomMot","DorsAttn","SalVentAttn","Limbic","Cont","Default"]
+NET_ID = {n:i+1 for i,n in enumerate(NET_ORDER)}
+# colori per i 7 networks principali (Sheafer 800)
+NET_COL = {
+    "Vis": "silver",
+    "SomMot": "yellow",
+    "DorsAttn": "orange",
+    "SalVentAttn": "red",
+    "Limbic": "purple",
+    "Cont": "blue",
+    "Default": "green",
+}
+
+# colormap discreta: indice 0 -> trasparente/nero, 1..7 -> network
+cmap = ListedColormap(
+    ["black"] + [NET_COL[n] for n in NET_ORDER]
+)
+
+# ------------------------------
+# FUNCTIONS
+# ------------------------------
+def network_from_roi_name(roi_name: str) -> str:
+    """
+    Estrae il network (Vis, SomMot, DorsAttn, SalVentAttn, Limbic, Cont, Default)
+    da stringhe tipo: '7Networks_RH_Vis_21' oppure '7Networks_LH_Default_pCunPCC_17'.
+    Ritorna 'Unknown' se non trova nulla.
+    """
+    if roi_name is None or (isinstance(roi_name, float) and np.isnan(roi_name)):
+        return "Unknown"
+
+    s = str(roi_name)
+    for net in NET_COL.keys():
+        # match parola intera separata da _ o spazi
+        if re.search(rf"(?:^|[_\s]){re.escape(net)}(?:$|[_\s])", s):
+            return net
+    return "Unknown"
+
+def pick_voxel_inside_roi(atlas_labels: np.ndarray, roi_id: int) -> tuple[int, int, int] | None:
+    """
+    Sceglie un voxel che appartiene sicuramente alla ROI (roi_id).
+    Strategia: centroide (in voxel) dei voxel della ROI, arrotondato;
+    se per arrotondamento cade fuori, usa il voxel più vicino al centroide.
+    """
+    coords = np.array(np.where(atlas_labels == roi_id)).T  # (N,3) in voxel space
+    if coords.size == 0:
+        return None
+
+    c = coords.mean(axis=0)  # centroide float in voxel space
+    c_round = np.rint(c).astype(int)
+
+    # se arrotondato è davvero dentro ROI, ok
+    if (0 <= c_round[0] < atlas_labels.shape[0] and
+        0 <= c_round[1] < atlas_labels.shape[1] and
+        0 <= c_round[2] < atlas_labels.shape[2] and
+        atlas_labels[tuple(c_round)] == roi_id):
+        return tuple(c_round)
+
+    # altrimenti prendo il voxel ROI più vicino al centroide
+    d2 = np.sum((coords - c) ** 2, axis=1)
+    v = coords[np.argmin(d2)]
+    return tuple(v.astype(int))
+
+
+def draw_sphere_in_vox(vol: np.ndarray,
+                       center_ijk: tuple[int, int, int],
+                       radius_mm: float,
+                       reference_img: nib.Nifti1Image,
+                       label_value: int,
+                       roi_mask: np.ndarray | None = None):
+    """
+    Disegna una sfera attorno a center_ijk (voxel coords) in un volume 'vol'.
+    Se roi_mask è fornita (bool shape==vol), la sfera viene ritagliata dentro la ROI.
+    """
+    cx, cy, cz = center_ijk
+    shape = vol.shape
+    zooms = reference_img.header.get_zooms()[:3]  # mm/voxel
+
+    rx, ry, rz = [int(np.ceil(radius_mm / z)) for z in zooms]
+
+    x0, x1 = max(0, cx - rx), min(shape[0], cx + rx + 1)
+    y0, y1 = max(0, cy - ry), min(shape[1], cy + ry + 1)
+    z0, z1 = max(0, cz - rz), min(shape[2], cz + rz + 1)
+
+    xs = np.arange(x0, x1)
+    ys = np.arange(y0, y1)
+    zs = np.arange(z0, z1)
+    X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
+
+    dist2 = ((X - cx) * zooms[0])**2 + ((Y - cy) * zooms[1])**2 + ((Z - cz) * zooms[2])**2
+    sphere = dist2 <= radius_mm**2
+
+    if roi_mask is not None:
+        sphere &= roi_mask[x0:x1, y0:y1, z0:z1]
+
+    vol[x0:x1, y0:y1, z0:z1][sphere] = int(label_value)
+
+
+def main():
+    # --- sanity check
+    for p in [ATLAS_PATH, TOP50_CSV]:
+        if not p.exists():
+            raise FileNotFoundError(f"File non trovato: {p}")
+
+    # =========================
+    # LOAD
+    # =========================
+    atlas_img = nib.load(str(ATLAS_PATH))
+    atlas = atlas_img.get_fdata().astype(np.int32)
+
+    top50 = pd.read_csv(TOP50_CSV)
+    # colonne minime attese
+    for c in ["rank", "roi_id", "roi_name"]:
+        if c not in top50.columns:
+            raise ValueError(f"Nel CSV top50 manca '{c}'. Colonne: {list(top50.columns)}")
+
+    if "Net" in top50.columns:
+        top50["network"] = top50["Net"].astype(str)
+    elif "network" in top50.columns:
+        top50["network"] = top50["network"].astype(str)
+    else:
+        top50["network"] = top50["roi_name"].apply(network_from_roi_name)
+    
+    top50["roi_id"] = pd.to_numeric(top50["roi_id"], errors="coerce")
+    top50 = top50.dropna(subset=["roi_id"]).copy()
+    top50["roi_id"] = top50["roi_id"].astype(int)
+
+    # =========================
+    # BUILD spheres (in atlas space)
+    # =========================
+    net_vol = np.zeros(atlas.shape[:3], dtype=np.int16)
+    missing = []
+    used = []
+
+    for row in top50.itertuples(index=False):
+        roi_id = int(row.roi_id)
+        net = str(row.network)
+        if net not in NET_ID:
+            net = network_from_roi_name(row.roi_name)
+
+        net_id = NET_ID.get(net, 0)
+        v = pick_voxel_inside_roi(atlas, roi_id)
+
+        if v is None:
+            missing.append((row.rank, roi_id, row.roi_name))
+            continue
+
+        # maschera ROI (per clipping)
+        roi_mask = (atlas == roi_id) if CLIP_TO_ROI else None
+
+        # disegno: label_value puoi metterlo = roi_id oppure rank
+        draw_sphere_in_vox(
+            net_vol,
+            center_ijk=v,
+            radius_mm=RADIUS_MM,
+            reference_img=atlas_img,
+            label_value=net_id,
+            roi_mask=roi_mask
+        )
+
+        used.append((row.rank, roi_id, row.roi_name, net_id, *v))
+
+    print(f"[OK] ROI disegnate: {len(used)} / {len(top50)}")
+    if missing:
+        print("[WARN] ROI non trovate nell'atlas (prime 10):")
+        for m in missing[:10]:
+            print("  rank, roi_id, roi_name =", m)
+
+    # salva anche una tabella con i voxel scelti
+    used_df = pd.DataFrame(used, columns=["rank","roi_id","roi_name","Net","i","j","k"])
+    
+    vox_csv = OUT / "control_energy" / f"top50_voxel_centers_{BAND}.csv"
+    used_df.to_csv(vox_csv, index=False)
+    print("[OK] Salvato voxel centers:", vox_csv)
+
+    spheres_img = nib.Nifti1Image(net_vol, atlas_img.affine, atlas_img.header)
+
+    out_path = OUT / "control_energy" / f"top50_spheres_{BAND}_atlasSpace.nii.gz"
+    out_path.parent.mkdir(exist_ok=True, parents=True)
+    nib.save(spheres_img, str(out_path))
+    print("[OK] Salvato spheres NIfTI:", out_path)
+    # check nonzero
+    print("[CHECK] nonzero voxels:", int(np.count_nonzero(net_vol)))
+
+    net_img = nib.Nifti1Image(net_vol, atlas_img.affine, atlas_img.header)
+    out_path = OUT / "control_energy" / f"top50_spheres_{BAND}_networkID_atlasSpace.nii.gz"
+    nib.save(net_img, str(out_path))
+    print("[OK] Salvato NIfTI network-coded:", out_path)
+
+    # ✅ Interattivo nel browser con colormap discreta
+    v = plotting.view_img(
+        net_img,
+        bg_img=atlas_img,
+        cmap=cmap,
+        vmin=0,
+        vmax=len(NET_ORDER),
+        threshold=0.5,   # mostra solo valori >=1
+        title=f"Top50 controllers (colored by 7 networks) {BAND}"
+    )
+    v.open_in_browser()
+
+
+if __name__ == "__main__":
+    main()
