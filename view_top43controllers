@@ -5,7 +5,7 @@
 # i miei top50 creo un volume vuoto e disegno sfere attorno a ciascun centroide (raggio in mm)
 #visualizzo poi con nilearn e salvo il file top50_spheres.nii.gz da aprire in FreeSurfer
 
-# 1) CREO UN NIfTI CON 50 SFERE (SPAZIO DELL'ATLAS)
+# 1) CREO UN NIfTI CON 43 SFERE (SPAZIO DELL'ATLAS)
 import re
 import numpy as np
 import pandas as pd
@@ -13,6 +13,7 @@ import nibabel as nib
 from nilearn import plotting
 from pathlib import Path
 from matplotlib.colors import ListedColormap
+from typing import Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / "NCT_analysis\data"       # percorso alla cartella data del progetto
@@ -28,11 +29,18 @@ TOP43_CSV = OUT / "control_energy_definitivo" / "exports_top43" / f"band_{BAND}"
 RADIUS_MM = 3.0  # raggio sfera in mm
 CLIP_TO_ROI = True # se True, la sfera resta dentro la ROI (voxel) dell'atlas
 
-# ordine fisso dei 7 network (1..7)
-NET_ORDER = ["Vis","SomMot","DorsAttn","SalVentAttn","Limbic","Cont","Default"]
-NET_ID = {n:i+1 for i,n in enumerate(NET_ORDER)}
-# colori per i 7 networks principali (Sheafer 800)
-NET_COL = {
+# =========================
+# GROUPS (cortex + subcortex)
+# =========================
+CORT_ORDER = ["Vis", "SomMot", "DorsAttn", "SalVentAttn", "Limbic", "Cont", "Default"]
+SUB_ORDER  = ["HIP", "THA", "PUT", "CAU", "AMY", "NAc", "GP"]
+
+GROUP_ORDER = CORT_ORDER + SUB_ORDER
+GROUP_ID = {n:i+1 for i,n in enumerate(GROUP_ORDER)}
+
+# colori per i networks principali e subnetworks (Sheafer 800)
+GROUP_COL = {
+    # corticali
     "Vis": "silver",
     "SomMot": "yellow",
     "DorsAttn": "orange",
@@ -40,17 +48,23 @@ NET_COL = {
     "Limbic": "purple",
     "Cont": "blue",
     "Default": "green",
+    # subcorticali
+    "HIP": "brown",
+    "THA": "cyan",
+    "PUT": "magenta",
+    "CAU": "lime",
+    "AMY": "pink",
+    "NAc": "teal",
+    "GP": "gold"
 }
 
 # colormap discreta: indice 0 -> trasparente/nero, 1..7 -> network
-cmap = ListedColormap(
-    ["black"] + [NET_COL[n] for n in NET_ORDER]
-)
+cmap = ListedColormap(["black"] + [GROUP_COL[n] for n in GROUP_ORDER])
 
 # ------------------------------
 # FUNCTIONS
 # ------------------------------
-def network_from_roi_name(roi_name: str) -> str:
+def cortical_network_from_roi_name(roi_name: str) -> str:
     """
     Estrae il network (Vis, SomMot, DorsAttn, SalVentAttn, Limbic, Cont, Default)
     da stringhe tipo: '7Networks_RH_Vis_21' oppure '7Networks_LH_Default_pCunPCC_17'.
@@ -60,13 +74,66 @@ def network_from_roi_name(roi_name: str) -> str:
         return "Unknown"
 
     s = str(roi_name)
-    for net in NET_COL.keys():
+    for net in CORT_ORDER:
         # match parola intera separata da _ o spazi
         if re.search(rf"(?:^|[_\s]){re.escape(net)}(?:$|[_\s])", s):
             return net
     return "Unknown"
 
-def pick_voxel_inside_roi(atlas_labels: np.ndarray, roi_id: int) -> tuple[int, int, int] | None:
+def subcortex_from_roi_name(roi_name: str) -> str:
+    """
+    Esempi:
+      HIP-head-m-rh, THA-VPm-lh, PUT-VA-rh, CAU-body-lh,
+      lAMY-rh, mAMY-lh, NAc-shell-lh, NAc-core-rh, pGP-lh, aGP-rh
+    Ritorna: HIP/THA/PUT/CAU/AMY/NAc/GP oppure 'Unknown'
+    """
+    if roi_name is None or (isinstance(roi_name, float) and np.isnan(roi_name)):
+        return "Unknown"
+
+    s = str(roi_name).replace("_", "-")
+    s = re.sub(r"-(lh|rh)$", "", s, flags=re.IGNORECASE)  # togli emisfero finale
+
+    # AMY
+    if s.startswith("lAMY") or s.startswith("mAMY"):
+        return "AMY"
+    # GP
+    if s.startswith("pGP") or s.startswith("aGP"):
+        return "GP"
+    # prefissi standard
+    for pref in ("HIP", "THA", "PUT", "CAU", "NAc"):
+        if s.startswith(pref + "-") or s == pref:
+            return pref
+
+    return "Unknown"
+
+def group_from_roi(roi_name: str, roi_id: Optional[int] = None) -> str:
+    """
+    Categoria unica per colorare:
+    - cortex: 7 network
+    - subcortex: HIP/THA/PUT/CAU/AMY/NAc/GP
+    """
+    # se id subcorticale (801..850), forza parsing subcorticale
+    if roi_id is not None:
+        try:
+            if int(roi_id) >= 801:
+                g = subcortex_from_roi_name(roi_name)
+                return g if g in SUB_ORDER else "Unknown"
+        except Exception:
+            pass
+
+    # prova cortex
+    g = cortical_network_from_roi_name(roi_name)
+    if g in CORT_ORDER:
+        return g
+
+    # fallback subcortex
+    g2 = subcortex_from_roi_name(roi_name)
+    if g2 in SUB_ORDER:
+        return g2
+
+    return "Unknown"
+
+def pick_voxel_inside_roi(atlas_labels: np.ndarray, roi_id: int) -> Optional[Tuple[int, int, int]]:
     """
     Sceglie un voxel che appartiene sicuramente alla ROI (roi_id).
     Strategia: centroide (in voxel) dei voxel della ROI, arrotondato;
@@ -93,11 +160,11 @@ def pick_voxel_inside_roi(atlas_labels: np.ndarray, roi_id: int) -> tuple[int, i
 
 
 def draw_sphere_in_vox(vol: np.ndarray,
-                       center_ijk: tuple[int, int, int],
+                       center_ijk: Tuple[int, int, int],
                        radius_mm: float,
                        reference_img: nib.Nifti1Image,
                        label_value: int,
-                       roi_mask: np.ndarray | None = None):
+                       roi_mask: Optional[np.ndarray] = None) -> None:
     """
     Disegna una sfera attorno a center_ijk (voxel coords) in un volume 'vol'.
     Se roi_mask è fornita (bool shape==vol), la sfera viene ritagliata dentro la ROI.
@@ -125,7 +192,9 @@ def draw_sphere_in_vox(vol: np.ndarray,
 
     vol[x0:x1, y0:y1, z0:z1][sphere] = int(label_value)
 
-
+# =========================
+# MAIN
+# =========================
 def main():
     # --- sanity check
     for p in [ATLAS_PATH, TOP43_CSV]:
@@ -143,31 +212,25 @@ def main():
     for c in ["rank", "roi_id", "roi_name"]:
         if c not in top43.columns:
             raise ValueError(f"Nel CSV top43 manca '{c}'. Colonne: {list(top43.columns)}")
-    if "Net" in top43.columns:
-        top43["network"] = top43["Net"].astype(str)
-    elif "network" in top43.columns:
-        top43["network"] = top43["network"].astype(str)
-    else:
-        top43["network"] = top43["roi_name"].apply(network_from_roi_name)
     
     top43["roi_id"] = pd.to_numeric(top43["roi_id"], errors="coerce")
     top43 = top43.dropna(subset=["roi_id"]).copy()
     top43["roi_id"] = top43["roi_id"].astype(int)
+    # categoria unica (cortex+subcortex)
+    top43["group"] = top43.apply(lambda r: group_from_roi(r["roi_name"], r["roi_id"]), axis=1)
 
     # =========================
     # BUILD spheres (in atlas space)
     # =========================
-    net_vol = np.zeros(atlas.shape[:3], dtype=np.int16)
+    group_vol = np.zeros(atlas.shape[:3], dtype=np.int16)
     missing = []
     used = []
 
     for row in top43.itertuples(index=False):
         roi_id = int(row.roi_id)
-        net = str(row.network)
-        if net not in NET_ID:
-            net = network_from_roi_name(row.roi_name)
-
-        net_id = NET_ID.get(net, 0)
+        g = str(row.group)
+        g_id = GROUP_ID.get(g, 0)
+        
         v = pick_voxel_inside_roi(atlas, roi_id)
 
         if v is None:
@@ -179,15 +242,15 @@ def main():
 
         # disegno: label_value puoi metterlo = roi_id oppure rank
         draw_sphere_in_vox(
-            net_vol,
+            group_vol,
             center_ijk=v,
             radius_mm=RADIUS_MM,
             reference_img=atlas_img,
-            label_value=net_id,
+            label_value=g_id,
             roi_mask=roi_mask
         )
 
-        used.append((row.rank, roi_id, row.roi_name, net_id, *v))
+        used.append((row.rank, roi_id, row.roi_name, g, g_id, *v))
 
     print(f"[OK] ROI disegnate: {len(used)} / {len(top43)}")
     if missing:
@@ -196,35 +259,33 @@ def main():
             print("  rank, roi_id, roi_name =", m)
 
     # salva anche una tabella con i voxel scelti
-    used_df = pd.DataFrame(used, columns=["rank","roi_id","roi_name","Net","i","j","k"])
+    used_df = pd.DataFrame(used, columns=["rank","roi_id","roi_name","group","group_id","i","j","k"])
     
     vox_csv = OUT / "control_energy_definitivo" / f"top43_voxel_centers_{BAND}.csv"
+    vox_csv.parent.mkdir(exist_ok=True, parents=True)
     used_df.to_csv(vox_csv, index=False)
     print("[OK] Salvato voxel centers:", vox_csv)
 
-    spheres_img = nib.Nifti1Image(net_vol, atlas_img.affine, atlas_img.header)
+    group_img = nib.Nifti1Image(group_vol, atlas_img.affine, atlas_img.header)
 
     out_path = OUT / "control_energy_definitivo" / f"top43_spheres_{BAND}_atlasSpace.nii.gz"
     out_path.parent.mkdir(exist_ok=True, parents=True)
-    nib.save(spheres_img, str(out_path))
-    print("[OK] Salvato spheres NIfTI:", out_path)
+    nib.save(group_img, str(out_path))
+    print("[OK] Salvato group-coded NIfTI:", out_path)
     # check nonzero
-    print("[CHECK] nonzero voxels:", int(np.count_nonzero(net_vol)))
-
-    net_img = nib.Nifti1Image(net_vol, atlas_img.affine, atlas_img.header)
-    out_path = OUT / "control_energy_definitivo" / f"top43_spheres_{BAND}_networkID_atlasSpace.nii.gz"
-    nib.save(net_img, str(out_path))
-    print("[OK] Salvato NIfTI network-coded:", out_path)
+    print("[CHECK] nonzero voxels:", int(np.count_nonzero(group_vol)))
 
     # ✅ Interattivo nel browser con colormap discreta
     v = plotting.view_img(
-        net_img,
+        group_img,
         bg_img=atlas_img,
         cmap=cmap,
         vmin=0,
-        vmax=len(NET_ORDER),
+        vmax=len(GROUP_ORDER),
         threshold=0.5,   # mostra solo valori >=1
-        title=f"Top43 controllers (colored by 7 networks) {BAND}"
+        symmetric_cmap=False,
+        resampling_interpolation="nearest",
+        title=f"Top43 controllers (cortex+subcortex) {BAND}"
     )
     v.open_in_browser()
 
