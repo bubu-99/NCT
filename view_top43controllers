@@ -17,14 +17,14 @@ from typing import Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / "NCT_analysis\data"       # percorso alla cartella data del progetto
-OUT = ROOT / "output_definitivo"   # Cartella per gli output
+OUT = ROOT / "RESULTS"   # Cartella per gli output
 OUT.mkdir(exist_ok=True, parents=True)
 
 ATLAS_PATH = BASE / "Sheafer800_TianS3.nii"  # file atlas dentro il folder
 LUT_XLSX   = BASE / "centroidsMNI2mm_850ROIs.xlsx"
 
 BAND = "80_250"
-TOP43_CSV = OUT / "control_energy_definitivo" / "exports_top43" / f"band_{BAND}" / f"top43_controllers_{BAND}_named.csv"
+TOP43_CSV = OUT / "CONTROL_ENERGY" / "exports_top43" / f"band_{BAND}" / f"top43_controllers_{BAND}_named.csv"
 
 RADIUS_MM = 3.0  # raggio sfera in mm
 CLIP_TO_ROI = True # se True, la sfera resta dentro la ROI (voxel) dell'atlas
@@ -261,14 +261,14 @@ def main():
     # salva anche una tabella con i voxel scelti
     used_df = pd.DataFrame(used, columns=["rank","roi_id","roi_name","group","group_id","i","j","k"])
     
-    vox_csv = OUT / "control_energy_definitivo" / f"top43_voxel_centers_{BAND}.csv"
+    vox_csv = OUT / "CONTROL_ENERGY" / f"top43_voxel_centers_{BAND}.csv"
     vox_csv.parent.mkdir(exist_ok=True, parents=True)
     used_df.to_csv(vox_csv, index=False)
     print("[OK] Salvato voxel centers:", vox_csv)
 
     group_img = nib.Nifti1Image(group_vol, atlas_img.affine, atlas_img.header)
 
-    out_path = OUT / "control_energy_definitivo" / f"top43_spheres_{BAND}_atlasSpace.nii.gz"
+    out_path = OUT / "CONTROL_ENERGY" / f"top43_spheres_{BAND}_atlasSpace.nii.gz"
     out_path.parent.mkdir(exist_ok=True, parents=True)
     nib.save(group_img, str(out_path))
     print("[OK] Salvato group-coded NIfTI:", out_path)

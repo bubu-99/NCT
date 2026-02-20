@@ -18,21 +18,21 @@ except NameError:
     ROOT = Path.cwd()
 
 BASE = ROOT / "NCT_analysis\data"       # percorso alla cartella data del progetto
-OUT = ROOT / "output"   # Cartella per gli output
+OUT = ROOT / "RESULTS"   # Cartella per gli output
 OUT.mkdir(exist_ok=True, parents=True)
 
 ATLAS_PATH = BASE / "Sheafer800_TianS3.nii"  # file atlas dentro il folder
 LUT_XLSX   = BASE / "centroidsMNI2mm_850ROIs.xlsx"
 
 BAND = "80_250"
-TOP_CSV = OUT / "control_energy_definitivo" / f"top_nodes_controllers_{BAND}.csv"
+TOP_CSV = OUT / "CONTROL_ENERGY" / f"top_nodes_controllers_{BAND}.csv"
 
 # Output file names
 LOOKUP_CSV = OUT / "roi_lookup_850.csv"
 LOOKUP_XLSX = OUT / "roi_lookup_850.xlsx"
-TOP43_CSV  = OUT / "control_energy_definitivo" / f"top43_controllers_{BAND}_named.csv"
-TOP43_RH_CSV  = OUT / "control_energy_definitivo" / f"top43_controllers_{BAND}_RH.csv"
-TOP43_LH_CSV  = OUT / "control_energy_definitivo" / f"top43_controllers_{BAND}_LH.csv"
+TOP43_CSV  = OUT / "CONTROL_ENERGY" / f"top43_controllers_{BAND}_named.csv"
+TOP43_RH_CSV  = OUT / "CONTROL_ENERGY" / f"top43_controllers_{BAND}_RH.csv"
+TOP43_LH_CSV  = OUT / "CONTROL_ENERGY" / f"top43_controllers_{BAND}_LH.csv"
 
 
 EXCEL_DIR   = OUT / "excel_exports"   # cartella unica per tutti gli .xlsx
